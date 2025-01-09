@@ -628,6 +628,9 @@ int main(int argc,char* argv[]){
         /* (1) Update 'clks' to match this cycle's value */
         IOReg[CLKS] = (uint32_t)(cycle_count & 0xFFFFFFFF);
 
+        /* (6) Fetch+Decode+Execute one instruction */
+        execute_instruction();
+
         /* (2) Possibly raise irq2 this cycle */
         check_irq2();
 
@@ -640,8 +643,6 @@ int main(int argc,char* argv[]){
         /* (5) Check interrupts & jump if needed */
         check_interrupts();
 
-        /* (6) Fetch+Decode+Execute one instruction */
-        execute_instruction();
 
         /* (7) One full cycle done */
         cycle_count++;
