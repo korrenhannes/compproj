@@ -559,35 +559,49 @@ static void write_outputs(
     const char* monitorf,
     const char* monitoryuvf)
 {
-    // dmemout
-    for(int i=0;i<DMEM_SIZE;i++){
-        fprintf(fdmemout, "%08x\n", dmem[i]);
+    /* --- DMEMOUT: skip trailing zeros --- */
+    int last_nonzero_dmem = -1;
+    for(int i=0; i<DMEM_SIZE; i++){
+        if(dmem[i] != 0) {
+            last_nonzero_dmem = i;
+        }
     }
-    // regout
-    for(int i=3;i<16;i++){
+    if(last_nonzero_dmem >= 0) {
+        /* Print dmem[0]..dmem[last_nonzero_dmem] */
+        for(int i=0; i<=last_nonzero_dmem; i++){
+            fprintf(fdmemout, "%08x\n", dmem[i]);
+        }
+    }
+    /* If everything was zero, we simply produce an empty dmemout.txt */
+
+    /* REGOUT */
+    for(int i=3; i<16; i++){
         fprintf(fregout, "%08x\n", R[i]);
     }
-    // cycles
+
+    /* CYCLES */
     fprintf(fcycles, "%llu\n", (unsigned long long)cycle_count);
 
-    // diskout => skip trailing zeros
+    /* DISKOUT => already skipping trailing zeros */
     int last_nonzero=-1;
-    for(int i=0;i<DISK_SIZE;i++){
+    for(int i=0; i<DISK_SIZE; i++){
         if(disk[i]!=0) last_nonzero=i;
     }
-    if(last_nonzero>=0){
-        for(int i=0;i<=last_nonzero;i++){
+    if(last_nonzero >= 0){
+        for(int i=0; i<=last_nonzero; i++){
             fprintf(fdiskout, "%08x\n", disk[i]);
         }
     }
 
-    // monitor.txt
-    for(int i=0;i<MONITOR_SIZE;i++){
+    /* MONITOR.TXT */
+    for(int i=0; i<MONITOR_SIZE; i++){
         fprintf(fmonitor, "%02x\n", monitor[i]);
     }
-    // monitor.yuv => binary
+
+    /* MONITOR.YUV => binary dump */
     fwrite(monitor,1,MONITOR_SIZE,fmonitoryuv);
 }
+
 
 int main(int argc,char* argv[]){
     if(argc<15){
