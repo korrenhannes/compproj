@@ -103,37 +103,3 @@ halt $zero, $zero, $zero, $zero, 0, 0
 # M1: addresses 0x100 to 0x10F (256 to 271)
 # M2: addresses 0x110 to 0x11F (272 to 287)
 ############################################################
-
-    .word 256 1
-    .word 257 2 
-    .word 258 3
-    .word 259 4
-    .word 260 5
-    .word 261 6 
-    .word 262 7
-    .word 263 8
-    .word 264 9
-    .word 265 10
-    .word 266 11
-    .word 267 12
-    .word 268 13
-    .word 269 14
-    .word 270 15
-    .word 271 16
-
-    .word 272 1
-    .word 273 2 
-    .word 274 3
-    .word 275 4
-    .word 276 5
-    .word 277 6 
-    .word 278 7
-    .word 279 8
-    .word 280 9
-    .word 281 10
-    .word 282 11
-    .word 283 12
-    .word 284 13
-    .word 285 14
-    .word 286 15
-    .word 287 16
