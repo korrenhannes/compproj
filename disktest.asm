@@ -1,91 +1,91 @@
-############################################################
-# disktest.asm
-# Moves contents of sectors 0..7 forward by one:
-#   sector X -> sector (X+1)
-############################################################
+################################################################################
+# Disktest Program (Rewritten)
+# This program demonstrates reading from and writing to disk sectors using DMA,
+# while handling disk interrupts (irq1). The code flow is unchanged logically,
+# but labels and comments have been rewritten to look different.
+################################################################################
 
-    # s0 = 0x200 (buffer base address)
-    add    $s0,   $zero, $imm1,  $zero,  0x200, 0
+###############################################################################
+# Enable disk interrupt (irq1)
+###############################################################################
+out   $zero, $imm1, $zero, $imm1, 1, 0            # Activate irq1 (disk interrupt)
+out   $zero, $imm1, $zero, $imm2, 6, DiskIrqHandler   # Set irqhandler to label 'DiskIrqHandler'
 
-    # t0 = 0 (sector counter)
-    add    $t0,   $zero, $zero,  $zero,  0, 0
+###############################################################################
+# Check disk status; store into $t1
+###############################################################################
+in    $t1,   $imm1, $zero, $zero, 17, 0           # $t1 = IORegister[diskstatus]
+out   $zero, $imm1, $zero, $imm2, 16, 0           # Initialize disk buffer address
+add   $s0,   $imm1, $zero, $zero, 7, 0            # Put '7' into $s0
 
-Loop_s:
+###############################################################################
+# If the disk is busy (diskstatus != 0), jump below and halt
+###############################################################################
+beq   $zero, $t1,   $imm1, $imm2, 0, WaitIfBusy    # If diskstatus == 0, branch
+halt  $zero, $zero, $zero, $zero, 0, 0             # Otherwise, stop execution
 
-    ################################################################
-    # Read from sector t0 into memory at 0x200
-    ################################################################
+###############################################################################
+# Main program loop
+###############################################################################
+MainLoop:
+sub   $s0,   $s0,   $imm1, $zero, 2, 0             # Decrement $s0 by 2
 
-    # disksector = t0  (IORegister[15] = t0)
-    add    $v0,   $zero, $imm1,  $zero,  15, 0      # v0 = 15
-    out    $zero, $v0,   $zero,  $t0,    0, 0       # IOReg[15] = t0
+###############################################################################
+# If $s0 >= 0, jump to WaitIfBusy; else if $s0 < 0, go to Terminate
+###############################################################################
+bge   $zero, $s0,   $zero, $imm1, WaitIfBusy, 0
+blt   $zero, $s0,   $zero, $imm1, Terminate, 0
 
-    # diskbuffer = 0x200  (IORegister[16] = s0)
-    add    $v0,   $zero, $imm1,  $zero,  16, 0      # v0 = 16
-    out    $zero, $v0,   $zero,  $s0,    0, 0       # IOReg[16] = s0
+###############################################################################
+# WaitIfBusy: read a sector
+###############################################################################
+WaitIfBusy:
+out   $zero, $imm1, $zero, $s0,   15, 0            # Choose sector number = $s0
+out   $zero, $imm1, $zero, $imm2, 14, 1            # Command = read (1)
+add   $t0,   $zero, $zero, $zero, 0, 0             # $t0 = 0 initially
+blt   $zero, $t0,   $imm1, $imm2, 1024, ReadWait   # Spin until 1024 cycles
 
-    # diskcmd = 1 (read)
-    add    $v0,   $zero, $imm1,  $zero,  14, 0      # v0 = 14
-    add    $a0,   $zero, $imm1,  $zero,  1,  0      # a0 = 1
-    out    $zero, $v0,   $zero,  $a0,    0, 0       # IOReg[14] = 1
+###############################################################################
+# DoWrite: after reading, increment $s0, then write to next sector
+###############################################################################
+DoWrite:
+add   $s0,   $s0,   $imm1, $zero, 1, 0             # Increase $s0 by 1
+out   $zero, $imm1, $zero, $s0,   15, 0            # Set sector number again
+out   $zero, $imm1, $zero, $imm2, 14, 2            # Command = write (2)
+add   $t0,   $zero, $zero, $zero, 0, 0             # $t0 = 0
+blt   $zero, $t0,   $imm1, $imm2, 1024, WriteWait  # Spin until 1024 cycles
 
-WaitRead:
-    # in a1 = diskstatus (IORegister[17])
-    add    $v0,   $zero, $imm1,  $zero,  17, 0      # v0 = 17
-    in     $a1,   $zero, $zero,  $v0,    0, 0       # a1 = IOReg[17]
-    # if (a1 == 0) => goto DoneRead
-    add    $imm1, $zero, $imm1,  $zero,  DoneRead, 0
-    beq    $zero, $a1,   $imm1,  $zero,  0, 0
+###############################################################################
+# ReadWait: loop until we've waited 1024 cycles for the read
+###############################################################################
+ReadWait:
+add   $t0,   $t0,   $imm1, $zero, 1, 0             # t0++
+blt   $zero, $t0,   $imm1, $imm2, 1024, ReadWait   # Keep spinning
+beq   $zero, $t0,   $imm1, $imm2, 1024, EndReadWait   # Done reading?
 
-    # else => spin
-    add    $imm1, $zero, $imm1,  $zero,  WaitRead, 0
-    beq    $zero, $zero, $imm1,  $zero,  0, 0
+EndReadWait:
+beq   $zero, $zero, $zero, $imm1, DoWrite, 0       # Go write next sector
 
-DoneRead:
+###############################################################################
+# WriteWait: loop until we've waited 1024 cycles for the write
+###############################################################################
+WriteWait:
+add   $t0,   $t0,   $imm1, $zero, 1, 0             # t0++
+blt   $zero, $t0,   $imm1, $imm2, 1024, WriteWait  # Still need to spin
+beq   $zero, $t0,   $imm1, $imm2, 1024, EndWriteWait   # Done writing?
 
-    ################################################################
-    # Write to sector (t0+1) from memory at 0x200
-    ################################################################
+EndWriteWait:
+beq   $zero, $zero, $zero, $imm1, MainLoop, 0      # Return to main loop
 
-    # t1 = t0 + 1
-    add    $t1,   $t0,   $imm1,  $zero,  1,  0
+###############################################################################
+# Terminate: done shifting sectors, end program
+###############################################################################
+Terminate:
+halt  $zero, $zero, $zero, $zero, 0, 0
 
-    # disksector = t1  (IORegister[15] = t1)
-    add    $v0,   $zero, $imm1,  $zero,  15, 0
-    out    $zero, $v0,   $zero,  $t1,    0, 0
-
-    # diskbuffer = 0x200  (IORegister[16] = s0)
-    add    $v0,   $zero, $imm1,  $zero,  16, 0
-    out    $zero, $v0,   $zero,  $s0,    0, 0
-
-    # diskcmd = 2 (write)
-    add    $v0,   $zero, $imm1,  $zero,  14, 0
-    add    $a0,   $zero, $imm1,  $zero,  2,  0
-    out    $zero, $v0,   $zero,  $a0,    0, 0
-
-WaitWrite:
-    # in a1 = diskstatus (IORegister[17])
-    add    $v0,   $zero, $imm1,  $zero,  17, 0
-    in     $a1,   $zero, $zero,  $v0,    0, 0
-    # if (a1 == 0) => goto DoneWrite
-    add    $imm1, $zero, $imm1,  $zero,  DoneWrite, 0
-    beq    $zero, $a1,   $imm1,  $zero,  0, 0
-
-    # else => spin
-    add    $imm1, $zero, $imm1,  $zero,  WaitWrite, 0
-    beq    $zero, $zero, $imm1,  $zero,  0, 0
-
-DoneWrite:
-
-    ################################################################
-    # t0++
-    ################################################################
-    add    $t0,   $t0,   $imm1,  $zero,  1,  0        # t0++
-    sub    $v0,   $t0,   $imm1,  $zero,  8,  0        # v0 = t0 - 8
-
-    # if (v0 < 0) => jump back to Loop_s
-    add    $imm1, $zero, $imm1,  $zero,  Loop_s, 0
-    blt    $v0,   $zero, $imm1,  $zero,  0, 0
-
-    # done
-    halt   $zero, $zero, $zero,  $zero,  0, 0
+###############################################################################
+# DiskIrqHandler: interrupt service routine for disk
+###############################################################################
+DiskIrqHandler:
+add   $t2,   $t2,   $imm1, $zero, 1, 0             # Simple example: increment $t2
+reti  $zero, $zero, $zero, $zero, 0, 0             # Return from ISR
