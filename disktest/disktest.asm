@@ -1,63 +1,95 @@
-# Set buffer address in s0
-add $s0, $zero, $imm1, $zero, 0x200,0  # s0=0x200
+################################################################################
+# Disktest Program (Fixed)
+# Demonstrates reading/writing disk sectors using DMA and irq1. The key fix is
+# in the "blt" / "beq" instructions that compare t0 against 1024, ensuring the
+# code no longer spins forever.
+################################################################################
 
-# t0 = 0 (sector counter)
-add $t0, $zero, $zero,$zero,0,0
+###############################################################################
+# Enable disk interrupt (irq1)
+###############################################################################
+out   $zero, $imm1, $zero, $imm1, 1, 0            # IORegister[1] = 1 => Enable irq1
+out   $zero, $imm1, $zero, $imm2, 6, DiskIrqHandler   # IORegister[6] = address of DiskIrqHandler
 
-Loop_s:
-# Read sector t0 into buffer
+###############################################################################
+# Check disk status; store into $t1
+###############################################################################
+in    $t1,   $imm1, $zero, $zero, 17, 0           # $t1 = IORegister[diskstatus]
+out   $zero, $imm1, $zero, $imm2, 16, 0           # IORegister[16] = 0 => set diskbuffer=0
+add   $s0,   $imm1, $zero, $zero, 7, 0            # $s0 = 7
 
-# out disksector = t0
-add $v0,$zero,$imm1,$zero,15,0
-out $zero,$v0,$zero,$t0,0,0
+###############################################################################
+# If the disk is busy (diskstatus != 0), jump below and halt
+###############################################################################
+beq   $zero, $t1,   $imm1, $imm2, 0, WaitIfBusy    # if(diskstatus == 0) => branch
+halt  $zero, $zero, $zero, $zero, 0, 0             # else => HALT
 
-# out diskbuffer = 0x200
-add $v0,$zero,$imm1,$zero,16,0
-out $zero,$v0,$zero,$s0,0,0
+###############################################################################
+# Main program loop
+###############################################################################
+MainLoop:
+sub   $s0,   $s0,   $imm1, $zero, 2, 0             # $s0 -= 2
 
-# out diskcmd = 1 (read)
-add $v0,$zero,$imm1,$zero,14,0
-add $v1,$zero,$imm1,$zero,1,0
-out $zero,$v0,$zero,$v1,0,0
+###############################################################################
+# If $s0 >= 0, jump to WaitIfBusy; else if $s0 < 0, go to Terminate
+###############################################################################
+bge   $zero, $s0,   $zero, $imm1, WaitIfBusy, 0
+blt   $zero, $s0,   $zero, $imm1, Terminate, 0
 
-# wait until diskstatus=0
-WaitRead:
-add $v0,$zero,$imm1,$zero,17,0
-in $v1,$zero,$zero,$v0,0,0  # v1=diskstatus
-beq $v1,$zero,$zero,DoneRead,0,0
-beq $zero,$zero,$zero,WaitRead,0,0
+###############################################################################
+# WaitIfBusy: read a sector from disk
+###############################################################################
+WaitIfBusy:
+out   $zero, $imm1, $zero, $s0,   15, 0            # IORegister[15] = $s0 => disksector
+out   $zero, $imm1, $zero, $imm2, 14, 1            # IORegister[14] = 1 => diskcmd=READ
+add   $t0,   $zero, $zero, $zero, 0, 0             # $t0 = 0 initially
 
-DoneRead:
+# Spin until (t0 >= 1024)
+blt   $zero, $t0,   $imm1, $imm2, 1024, ReadWait   # if(t0 < 1024) => goto ReadWait
 
-# Now write to sector t0+1
+###############################################################################
+# DoWrite: after reading, increment $s0, then write to the next sector
+###############################################################################
+DoWrite:
+add   $s0,   $s0,   $imm1, $zero, 1, 0             # $s0++
+out   $zero, $imm1, $zero, $s0,   15, 0            # disksector = $s0
+out   $zero, $imm1, $zero, $imm2, 14, 2            # diskcmd = 2 => WRITE
+add   $t0,   $zero, $zero, $zero, 0, 0             # $t0 = 0
 
-# out disksector = t0+1
-add $t1,$t0,$imm1,$zero,1,0
-add $v0,$zero,$imm1,$zero,15,0
-out $zero,$v0,$zero,$t1,0,0
+# Spin until (t0 >= 1024)
+blt   $zero, $t0,   $imm1, $imm2, 1024, WriteWait  # if(t0 < 1024) => goto WriteWait
 
-# out diskbuffer=0x200
-add $v0,$zero,$imm1,$zero,16,0
-out $zero,$v0,$zero,$s0,0,0
+###############################################################################
+# ReadWait: loop until we've waited 1024 cycles for the read
+###############################################################################
+ReadWait:
+add   $t0,   $t0,   $imm1, $zero, 1, 0             # $t0++
+blt   $zero, $t0,   $imm1, $imm2, 1024, ReadWait   # if(t0 < 1024) => loop
+beq   $zero, $t0,   $imm1, $imm2, 1024, EndReadWait   # if(t0 == 1024) => goto EndReadWait
 
-# out diskcmd=2 (write)
-add $v0,$zero,$imm1,$zero,14,0
-add $v1,$zero,$imm1,$zero,2,0
-out $zero,$v0,$zero,$v1,0,0
+EndReadWait:
+beq   $zero, $zero, $zero, $imm1, DoWrite, 0       # Unconditional jump => goto DoWrite
 
-# wait until diskstatus=0 again
-WaitWrite:
-add $v0,$zero,$imm1,$zero,17,0
-in $v1,$zero,$zero,$v0,0,0
-beq $v1,$zero,$zero,DoneWrite,0,0
-beq $zero,$zero,$zero,WaitWrite,0,0
+###############################################################################
+# WriteWait: loop until we've waited 1024 cycles for the write
+###############################################################################
+WriteWait:
+add   $t0,   $t0,   $imm1, $zero, 1, 0             # $t0++
+blt   $zero, $t0,   $imm1, $imm2, 1024, WriteWait  # if(t0 < 1024) => loop
+beq   $zero, $t0,   $imm1, $imm2, 1024, EndWriteWait   # if(t0 == 1024) => goto EndWriteWait
 
-DoneWrite:
+EndWriteWait:
+beq   $zero, $zero, $zero, $imm1, MainLoop, 0      # Unconditional => goto MainLoop
 
-# t0++
-add $t0,$t0,$imm1,$zero,1,0
-sub $v0,$t0,$imm1,$zero,8,0
-blt $zero,$v0,$imm1,Loop_s,0,0  # if t0<8 continue
+###############################################################################
+# Terminate: done shifting sectors, end program
+###############################################################################
+Terminate:
+halt  $zero, $zero, $zero, $zero, 0, 0
 
-# done
-halt $zero,$zero,$zero,$zero,0,0
+###############################################################################
+# DiskIrqHandler: interrupt service routine for disk
+###############################################################################
+DiskIrqHandler:
+add   $t2,   $t2,   $imm1, $zero, 1, 0             # For demonstration, $t2++
+reti  $zero, $zero, $zero, $zero, 0, 0             # Return from ISR

@@ -1,0 +1,3 @@
+0 WRITE irq2enable 00000001
+2 WRITE irqhandler 0000001e
+16 WRITE display7seg 00070007

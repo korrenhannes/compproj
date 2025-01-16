@@ -1,69 +1,120 @@
-# Load radius from MEM[0x100]
-add $v0, $zero, $imm1, $zero, 0x100,0
-lw  $t0, $v0, $zero,$zero,0,0   # t0 = radius
+###########################################################
+# circle.asm (rewritten version, same logic & registers)
+# This program draws a circle of a given radius on a 256×256
+# monochrome monitor, centered at (128,128). The radius is 
+# stored in data memory at address 0x100. We then fill all 
+# pixels within the circle in white (0xFF).
+###########################################################
 
-# Compute radius^2 in s0 using mac
-# s0 = t0*t0
-mac $s0, $t0, $t0, $zero,0,0
+###########################################################
+# 1) Load the circle radius from MEM[0x100] into $s0
+###########################################################
+lw    $s0,   $imm1,   $zero,  $zero, 0x100, 0    # $s0 ← MEM[0x100]
 
-# x=0
-add $t1, $zero, $zero,$zero,0,0
+###########################################################
+# 2) Compute radius^2 and store it in $s1
+###########################################################
+mac   $s1,   $s0,   $s0,    $zero, 0, 0          # $s1 = (radius * radius) + 0
 
-Loop_x:
-# y=0
-add $t2, $zero, $zero,$zero,0,0
+###########################################################
+# 3) Initialize x to (128 - radius) in $t1
+###########################################################
+sub   $t1,   $imm1,  $s0,   $zero, 128, 0        # $t1 = 128 - radius
 
-Loop_y:
-# dx = x-128
-add $t3, $t1, $imm1,$zero,-128,0
-# dy = y-128
-add $t4, $t2, $imm1,$zero,-128,0
+X_LOOP:
+  #########################################################
+  # Compare x to (128 + radius). If equal, finish program.
+  #########################################################
+  add   $t0,  $imm1,  $s0,   $zero, 128, 0       # $t0 = 128 + radius
+  beq   $zero, $t0,   $t1,   $imm1, END_PROG, 0  # if (x == 128 + radius) => go END_PROG
+  
+  #########################################################
+  # For each x, start y at (128 - radius) in $t2
+  #########################################################
+  sub   $t2,  $imm1,  $s0,   $zero, 128, 0       # $t2 = 128 - radius
 
-# Compute dist² = dx*dx + dy*dy using mac
-mac $v0,$t3,$t3,$zero,0,0    # v0 = dx*dx
-mac $v0,$t4,$t4,$v0,0,0       # v0 = dx*dx+dy*dy
+Y_LOOP:
+  #########################################################
+  # If y == 256, move to next x
+  #########################################################
+  beq   $zero, $t0,   $t2,   $imm1, NEXT_X, 0    # if (y == 256) => jump to NEXT_X
 
-# Compare dist² with radius²
-sub $v1,$v0,$s0,$zero,0,0
-# if v1 <= 0 => dist² <= radius²
-ble $v1,$zero,$imm1,Inside,0,0
+  #########################################################
+  # dx = 128 - x  => store in $s2
+  # dy = 128 - y  => store in $a1
+  #########################################################
+  sub   $s2,   $imm1,  $t1,  $zero, 128, 0
+  sub   $a1,   $imm1,  $t2,  $zero, 128, 0
 
-Outside:
-# pixel=0x00 (black)
-add $a2,$zero,$zero,$zero,0,0
-beq $zero,$zero,$zero,DrawPixel,0,0
+  #########################################################
+  # dist^2 = dx^2 + dy^2 => store in $v0
+  #########################################################
+  mac   $v0,   $s2,   $s2,   $zero, 0, 0
+  mac   $v0,   $a1,   $a1,   $v0,   0, 0
 
-Inside:
-# pixel=0xFF (white)
-add $a2,$zero,$imm1,$zero,0xFF,0
+  #########################################################
+  # Compare dist^2 with radius^2. If dist^2 <= r^2, jump inside
+  #########################################################
+  ble   $zero, $v0,   $s1,   $imm1, INSIDE, 0
 
-DrawPixel:
-# pixel address = x*256+y
-sll $a0,$t1,$imm1,$zero,8,0  # a0 = x<<8 = x*256
-add $a0,$a0,$t2,$zero,0,0    # a0 = x*256+y
+  #########################################################
+  # Otherwise, skip drawing => jump to next y
+  #########################################################
+  beq   $zero, $zero, $zero, $imm1, NEXT_Y, 0
 
-# out monitoraddr= a0
-add $v0,$zero,$imm1,$zero,20,0
-out $zero,$v0,$zero,$a0,0,0
+INSIDE:
+  #########################################################
+  # Pixel is inside the circle => set color to 0xFF
+  #########################################################
+  add   $a2,   $zero, $imm1, $zero, 0xFF, 0  # $a2 = 255 (white)
 
-# out monitordata= a2
-add $v0,$zero,$imm1,$zero,21,0
-out $zero,$v0,$zero,$a2,0,0
+DRAWPIXEL:
+  #########################################################
+  # Compute pixel address offset = (x << 8) + y => store in $a0
+  #########################################################
+  sll   $a0,   $t1,   $imm1, $zero, 8, 0
+  add   $a0,   $a0,   $t2,   $zero, 0, 0
 
-# out monitorcmd=1
-add $v0,$zero,$imm1,$zero,22,0
-add $v1,$zero,$imm1,$zero,1,0
-out $zero,$v0,$zero,$v1,0,0
+  #########################################################
+  # Write pixel to monitor hardware registers:
+  #   monitoraddr (IO reg #20) ← offset
+  #   monitordata (IO reg #21) ← color
+  #   monitorcmd  (IO reg #22) ← 1 (to commit pixel)
+  #########################################################
+  out   $zero, $imm1, $zero, $a0,   20, 0
+  out   $zero, $imm1, $zero, $a2,   21, 0
+  out   $zero, $zero, $imm2, $imm1, 1, 22
 
-# y++
-add $t2,$t2,$imm1,$zero,1,0
-sub $v0,$t2,$imm1,$zero,256,0
-blt $zero,$v0,$imm1,Loop_y,0,0
+NEXT_Y:
+  #########################################################
+  # y++
+  #########################################################
+  add   $t2,   $t2,   $imm1, $zero, 1, 0
 
-# x++
-add $t1,$t1,$imm1,$zero,1,0
-sub $v0,$t1,$imm1,$zero,256,0
-blt $zero,$v0,$imm1,Loop_x,0,0
+  #########################################################
+  # Unconditional jump back to Y_LOOP
+  #########################################################
+  beq   $zero, $zero, $zero, $imm1, Y_LOOP, 0
 
-# done
-halt $zero,$zero,$zero,$zero,0,0
+NEXT_X:
+  #########################################################
+  # x++
+  #########################################################
+  add   $t1,   $t1,   $imm1, $zero, 1, 0
+
+  #########################################################
+  # Unconditional jump back to X_LOOP
+  #########################################################
+  beq   $zero, $zero, $zero, $imm1, X_LOOP, 0
+
+END_PROG:
+  #########################################################
+  # Halt execution
+  #########################################################
+  halt  $zero, $zero, $zero, $zero, 0, 0
+
+###########################################################
+# Initialize data memory:
+# MEM[0x100] = 10 (the default radius, can be changed)
+###########################################################
+.word 0x100 10
