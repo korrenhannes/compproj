@@ -24,15 +24,16 @@ L2:
 	add $t0, $zero, $zero, $zero, 0, 0
 	blt $zero, $t0, $imm1, $imm2, 1024, LOOPWRITE
 LOOPREAD:
-	add $t0, $t0, $imm1, $zero, 1, 0
-	blt $zero, $t0, $imm1, $imm2, 1024, LOOPREAD
-	beq $zero, $t0, $imm1, $imm2, 1024, ENDREAD
+  add $t0, $t0, $imm1, $zero, 1, 0
+  blt $t0, $imm1, $zero, $imm2, 1024, LOOPREAD   # if (t0 < 1024) goto LOOPREAD
+  beq $zero, $t0, $imm1, $imm2, 1024, ENDREAD    # if (0 == t0) ???
+
 ENDREAD:
 	beq $zero, $zero, $zero, $imm1, L2, 0
 LOOPWRITE:
-	add $t0, $t0, $imm1, $zero, 1, 0
-	blt $zero, $t0, $imm1, $imm2, 1024, LOOPWRITE
-	beq $zero, $t0, $imm1, $imm2, 1024, ENDWRITE
+  add $t0, $t0, $imm1, $zero, 1, 0
+  blt $t0, $imm1, $zero, $imm2, 1024, LOOPWRITE  # if (t0 < 1024) goto LOOPWRITE
+  beq $zero, $t0, $imm1, $imm2, 1024, ENDWRITE
 ENDWRITE:
 	beq $zero, $zero, $zero, $imm1, MAIN, 0
 ENDMAIN:
