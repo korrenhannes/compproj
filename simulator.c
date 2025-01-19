@@ -67,9 +67,14 @@ static int  irq2_index   = 0;
 static uint32_t last_leds  = 0;
 static uint32_t last_7seg  = 0;
 
-/* Disk busy state */
+/* Disk busy state + pending info */
 static int      disk_busy        = 0;
 static uint64_t disk_start_cycle = 0;
+
+/* NEW: We'll store the disk command info for use AFTER 1024 cycles */
+static int      pending_cmd     = 0;       /* 1=read, 2=write */
+static uint32_t pending_sector  = 0;       /* 0..127 */
+static uint32_t pending_buffer  = 0;       /* 0..4095 */
 
 /* Output file pointers */
 static FILE *fdmemout, *fregout, *ftrace, *fhwregtrace, *fcycles;
@@ -256,14 +261,31 @@ static void update_timer(){
     }
 }
 
-/* Disk logic */
+/* Disk logic: check if 1024 cycles have elapsed => finish transfer */
 static void update_disk(){
     if(disk_busy){
         if((cycle_count - disk_start_cycle)>=1024){
-            disk_busy=0;
-            IOReg[DISKSTATUS]=0;
-            IOReg[DISKCMD]=0;
-            IOReg[IRQ1STATUS]=1;
+            // Now do the actual data transfer
+            if(pending_sector < 128) {
+                int base = pending_sector * 128;
+                if(pending_cmd == 1) {
+                    // read disk->mem
+                    for(int i=0; i<128; i++){
+                        dmem[pending_buffer + i] = disk[base + i];
+                    }
+                } else if(pending_cmd == 2) {
+                    // write mem->disk
+                    for(int i=0; i<128; i++){
+                        disk[base + i] = dmem[pending_buffer + i];
+                    }
+                }
+            }
+
+            // Done; free the disk
+            disk_busy           = 0;
+            IOReg[DISKSTATUS]   = 0;
+            IOReg[DISKCMD]      = 0;
+            IOReg[IRQ1STATUS]   = 1; /* raise interrupt */
         }
     }
 }
@@ -283,32 +305,18 @@ static void check_interrupts(){
     }
 }
 
-/* Start disk op if free */
+/* Only record cmd/sector/buffer here, do NOT copy immediately */
 static void start_disk_op(){
-    int cmd=IOReg[DISKCMD];
-    if(cmd==1||cmd==2){
-        if(IOReg[DISKSTATUS]==0){
-            disk_busy=1;
-            disk_start_cycle=cycle_count;
-            IOReg[DISKSTATUS]=1;
+    int cmd = IOReg[DISKCMD];
+    if((cmd==1||cmd==2) && IOReg[DISKSTATUS]==0){
+        disk_busy        = 1;
+        disk_start_cycle = cycle_count;
+        IOReg[DISKSTATUS] = 1;
 
-            uint32_t sector=IOReg[DISKSECTOR]&0x7F;
-            uint32_t buffer=IOReg[DISKBUFFER]&0xFFF;
-            if(sector<128){
-                int base=sector*128;
-                if(cmd==1){
-                    // read disk->mem
-                    for(int i=0;i<128;i++){
-                        dmem[buffer+i] = disk[base+i];
-                    }
-                } else {
-                    // write mem->disk
-                    for(int i=0;i<128;i++){
-                        disk[base+i]= dmem[buffer+i];
-                    }
-                }
-            }
-        }
+        /* Store params for future transfer in update_disk() */
+        pending_cmd     = cmd;
+        pending_sector  = IOReg[DISKSECTOR] & 0x7F;  /* 7 bits => 0..127 */
+        pending_buffer  = IOReg[DISKBUFFER] & 0xFFF; /* 12 bits => 0..4095 */
     }
 }
 
@@ -582,7 +590,7 @@ static void write_outputs(
     /* CYCLES */
     fprintf(fcycles, "%llu\n", (unsigned long long)cycle_count);
 
-    /* DISKOUT => already skipping trailing zeros */
+    /* DISKOUT => skipping trailing zeros */
     int last_nonzero=-1;
     for(int i=0; i<DISK_SIZE; i++){
         if(disk[i]!=0) last_nonzero=i;
@@ -637,6 +645,11 @@ int main(int argc,char* argv[]){
     cycle_count= 0;   /* Start from 0 per spec */
     PC         = 0;
 
+    /* Clear pending disk command info */
+    pending_cmd    = 0;
+    pending_sector = 0;
+    pending_buffer = 0;
+
     while(!halted)
     {
         /* (1) Update 'clks' to match this cycle's value */
@@ -656,7 +669,6 @@ int main(int argc,char* argv[]){
 
         /* (5) Check interrupts & jump if needed */
         check_interrupts();
-
 
         /* (7) One full cycle done */
         cycle_count++;
