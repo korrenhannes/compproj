@@ -558,7 +558,6 @@ static void execute_instruction(){
     print_trace_line(inst, oldPC, regs_before, opcode, rd, rs, rt, rm, imm1, imm2);
 }
 
-/* After halt: write outputs */
 static void write_outputs(
     const char* dmemout,
     const char* regout,
@@ -567,7 +566,7 @@ static void write_outputs(
     const char* monitorf,
     const char* monitoryuvf)
 {
-    /* --- DMEMOUT: skip trailing zeros --- */
+    /* DMEMOUT => skip trailing zeros if you want */
     int last_nonzero_dmem = -1;
     for(int i=0; i<DMEM_SIZE; i++){
         if(dmem[i] != 0) {
@@ -575,12 +574,11 @@ static void write_outputs(
         }
     }
     if(last_nonzero_dmem >= 0) {
-        /* Print dmem[0]..dmem[last_nonzero_dmem] */
         for(int i=0; i<=last_nonzero_dmem; i++){
             fprintf(fdmemout, "%08x\n", dmem[i]);
         }
     }
-    /* If everything was zero, we simply produce an empty dmemout.txt */
+    /* (If all DMEM was zero, dmemout.txt is empty) */
 
     /* REGOUT */
     for(int i=3; i<16; i++){
@@ -590,25 +588,21 @@ static void write_outputs(
     /* CYCLES */
     fprintf(fcycles, "%llu\n", (unsigned long long)cycle_count);
 
-    /* DISKOUT => skipping trailing zeros */
-    int last_nonzero=-1;
-    for(int i=0; i<DISK_SIZE; i++){
-        if(disk[i]!=0) last_nonzero=i;
-    }
-    if(last_nonzero >= 0){
-        for(int i=0; i<=last_nonzero; i++){
-            fprintf(fdiskout, "%08x\n", disk[i]);
-        }
+    /* DISKOUT: always print all 16384 lines! */
+    for(int i = 0; i < DISK_SIZE; i++){
+        fprintf(fdiskout, "%08x\n", disk[i]);
     }
 
-    /* MONITOR.TXT */
+    /* MONITOR.TXT (256*256 lines, each one byte) */
     for(int i=0; i<MONITOR_SIZE; i++){
         fprintf(fmonitor, "%02x\n", monitor[i]);
     }
 
-    /* MONITOR.YUV => binary dump */
-    fwrite(monitor,1,MONITOR_SIZE,fmonitoryuv);
+    /* MONITOR.YUV => binary dump of monitor[] */
+    fwrite(monitor, 1, MONITOR_SIZE, fmonitoryuv);
 }
+
+
 
 
 int main(int argc,char* argv[]){
