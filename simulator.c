@@ -1,63 +1,18 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdint.h>
-#include <ctype.h>
+#include "simulator.h"
 
-/*
-  SIMP Simulator
-  --------------
+/* ------------------ Global State ------------------ */
 
-  Command line:
-   sim.exe imemin.txt dmemin.txt diskin.txt irq2in.txt dmemout.txt regout.txt \
-           trace.txt hwregtrace.txt cycles.txt leds.txt display7seg.txt \
-           diskout.txt monitor.txt monitor.yuv
-*/
-
-#define IMEM_SIZE 4096
-#define DMEM_SIZE 4096
-#define DISK_SIZE 16384
-#define MONITOR_WIDTH 256
-#define MONITOR_HEIGHT 256
-#define MONITOR_SIZE (MONITOR_WIDTH * MONITOR_HEIGHT)
-
-#define NUM_REGS 16
-#define IO_REGS_COUNT 23 /* Up to monitorcmd indexed at 22 */
-
-/* IO Register indices */
-enum {
-    IRQ0ENABLE = 0, IRQ1ENABLE, IRQ2ENABLE,
-    IRQ0STATUS, IRQ1STATUS, IRQ2STATUS,
-    IRQHANDLER, IRQRETURN,
-    CLKS,
-    LEDS,
-    DISPLAY7SEG,
-    TIMERENABLE,
-    TIMERCURRENT,
-    TIMERMAX,
-    DISKCMD,
-    DISKSECTOR,
-    DISKBUFFER,
-    DISKSTATUS,
-    RESERVED1, RESERVED2,
-    MONITORADDR,
-    MONITORDATA,
-    MONITORCMD
-};
-
-/* Global State */
-
-/* Memories */
-static uint64_t imem[IMEM_SIZE];      /* Instruction memory (48-bit lines, stored as 64-bit) */
-static uint32_t dmem[DMEM_SIZE];      /* Data memory (32-bit words) */
-static uint32_t disk[DISK_SIZE];      /* Disk storage */
-static uint8_t  monitor[MONITOR_SIZE];/* 256x256 monochrome frame buffer */
+/* Memories (static => internal linkage) */
+static uint64_t imem[IMEM_SIZE];       /* Instruction memory (48-bit lines) */
+static uint32_t dmem[DMEM_SIZE];       /* Data memory (32-bit words) */
+static uint32_t disk[DISK_SIZE];       /* Disk (32-bit words) */
+static uint8_t  monitor[MONITOR_SIZE]; /* 256x256 monochrome frame buffer */
 
 /* CPU registers */
-static uint32_t R[NUM_REGS];          /* R0..R15 */
+static uint32_t R[NUM_REGS];           /* R0..R15 */
 
 /* Hardware IO registers */
-static uint32_t IOReg[IO_REGS_COUNT]; /* Up to index 22 */
+static uint32_t IOReg[IO_REGS_COUNT];  /* Up to index 22 */
 
 /* CPU control */
 static int      inISR       = 0;
@@ -65,7 +20,7 @@ static int      halted      = 0;
 static uint64_t cycle_count = 0;
 static uint32_t PC          = 0;
 
-/* External interrupt (irq2) data */
+/* irq2 data */
 static int* irq2_cycles = NULL;
 static int  irq2_count   = 0;
 static int  irq2_index   = 0;
@@ -78,8 +33,7 @@ static uint32_t last_7seg  = 0;
 static int      disk_busy        = 0;
 static uint64_t disk_start_cycle = 0;
 
-/* We store the disk command/buffer/sector so we can do the actual
-   memory ↔ disk transfer after 1024 cycles (instead of immediately). */
+/* We store disk cmd/buffer/sector for the delayed (1024-cycle) transfer */
 static int      g_diskcmd    = 0;
 static uint32_t g_disksector = 0;
 static uint32_t g_diskbuffer = 0;
@@ -89,9 +43,9 @@ static FILE *fdmemout, *fregout, *ftrace, *fhwregtrace, *fcycles;
 static FILE *fleds, *f7seg, *fdiskout, *fmonitor, *fmonitoryuv;
 
 
-/* -------------- Helpers -------------- */
+/* ------------------ Helper Functions ------------------ */
 
-static FILE* safe_fopen(const char* filename, const char* mode) {
+FILE* safe_fopen(const char* filename, const char* mode) {
     FILE* f = fopen(filename, mode);
     if(!f) {
         fprintf(stderr, "ERROR: Cannot open file '%s' with mode '%s'\n", filename, mode);
@@ -106,81 +60,9 @@ static uint32_t hex_to_u32(const char* str) {
     return val;
 }
 
-/* Read 48-bit instructions (12 hex digits per line) into imem[] */
-static void read_imem(const char* filename) {
-    FILE* f = fopen(filename, "r");
-    if(!f) {
-        memset(imem, 0, sizeof(imem));
-        return;
-    }
-    char line[64];
-    int addr=0;
-    while(fgets(line, sizeof(line), f)) {
-        if(addr>=IMEM_SIZE) break;
-        uint64_t val=0;
-        sscanf(line, "%llx", &val);
-        imem[addr++] = (val & 0xFFFFFFFFFFFFULL);
-    }
-    fclose(f);
-}
-
-/* Read data memory (dmem) from file */
-static void read_dmem(const char* filename) {
-    FILE* f = fopen(filename,"r");
-    if(!f) {
-        memset(dmem,0,sizeof(dmem));
-        return;
-    }
-    char line[64];
-    int addr=0;
-    while(fgets(line,sizeof(line),f)) {
-        if(addr>=DMEM_SIZE) break;
-        dmem[addr++] = hex_to_u32(line);
-    }
-    fclose(f);
-}
-
-/* Read disk from file */
-static void read_disk(const char* filename) {
-    FILE* f = fopen(filename,"r");
-    if(!f) {
-        memset(disk,0,sizeof(disk));
-        return;
-    }
-    char line[64];
-    int addr=0;
-    while(fgets(line,sizeof(line),f)) {
-        if(addr>=DISK_SIZE) break;
-        disk[addr++] = hex_to_u32(line);
-    }
-    fclose(f);
-}
-
-/* Read external interrupt cycles (irq2) */
-static void read_irq2(const char* filename) {
-    FILE* f = fopen(filename,"r");
-    if(!f) {
-        irq2_cycles=NULL;
-        irq2_count=0;
-        return;
-    }
-    int capacity=128;
-    irq2_cycles = (int*)malloc(capacity*sizeof(int));
-    irq2_count=0;
-    int x;
-    while(fscanf(f,"%d",&x)==1) {
-        if(irq2_count>=capacity){
-            capacity*=2;
-            irq2_cycles=(int*)realloc(irq2_cycles, capacity*sizeof(int));
-        }
-        irq2_cycles[irq2_count++] = x;
-    }
-    fclose(f);
-}
-
 /* Sign-extend 12-bit immediate */
 static int32_t sign_extend_12(uint32_t val) {
-    if(val & 0x800) { 
+    if(val & 0x800) {
         return (int32_t)(val | 0xFFFFF000);
     }
     return (int32_t)val;
@@ -218,11 +100,11 @@ static const char* ioreg_name(int idx) {
     return "unknown";
 }
 
-/* Log hardware register accesses */
+/* Log hardware register accesses to hwregtrace.txt */
 static void log_hwregtrace(int read_write, int reg, uint32_t data) {
     fprintf(fhwregtrace, "%llu %s %s %08x\n",
         (unsigned long long)cycle_count,
-        (read_write==0)?"READ":"WRITE",
+        (read_write==0) ? "READ":"WRITE",
         ioreg_name(reg),
         data
     );
@@ -230,7 +112,7 @@ static void log_hwregtrace(int read_write, int reg, uint32_t data) {
 
 /* Check LED changes */
 static void check_leds() {
-    if(IOReg[LEDS] != last_leds){
+    if(IOReg[LEDS] != last_leds) {
         fprintf(fleds, "%llu %08x\n",
             (unsigned long long)cycle_count,
             IOReg[LEDS]
@@ -241,7 +123,7 @@ static void check_leds() {
 
 /* Check 7seg changes */
 static void check_7seg() {
-    if(IOReg[DISPLAY7SEG] != last_7seg){
+    if(IOReg[DISPLAY7SEG] != last_7seg) {
         fprintf(f7seg, "%llu %08x\n",
             (unsigned long long)cycle_count,
             IOReg[DISPLAY7SEG]
@@ -250,10 +132,9 @@ static void check_7seg() {
     }
 }
 
-/* Possibly raise irq2 this cycle */
+/* Possibly raise IRQ2 this cycle */
 static void check_irq2() {
     if(irq2_index < irq2_count) {
-        /* If this cycle matches the next line in irq2in.txt => raise IRQ2 */
         if(irq2_cycles[irq2_index] == (int)cycle_count) {
             IOReg[IRQ2STATUS] = 1;
             irq2_index++;
@@ -268,74 +149,64 @@ static void update_timer() {
         /* If it just reached timermax => raise IRQ0 */
         if(IOReg[TIMERCURRENT] == IOReg[TIMERMAX]) {
             IOReg[TIMERCURRENT] = 0;
-            IOReg[IRQ0STATUS] = 1;
+            IOReg[IRQ0STATUS]   = 1;
         }
     }
 }
 
-/* 
-   Disk logic:
-   - If the disk is busy, check if 1024 cycles have elapsed.
-   - If yes, do the actual data transfer (read or write) now,
-     then set diskcmd=0, diskstatus=0, raise irq1status=1.
-*/
+/* Disk logic: if busy, check if 1024 cycles elapsed; then do actual transfer */
 static void update_disk() {
     if(disk_busy) {
         if((cycle_count - disk_start_cycle) >= 1024) {
-            /* Transfer now */
             disk_busy = 0;
             IOReg[DISKSTATUS] = 0;
             IOReg[DISKCMD]    = 0;
 
-            /* Perform the read/write if sector <128 */
+            /* If sector <128, do the read/write */
             if(g_disksector < 128) {
                 int base = g_disksector * 128;
                 if(g_diskcmd == 1) {
-                    /* read disk -> mem */
+                    /* read disk -> memory */
                     for(int i=0; i<128; i++) {
                         dmem[g_diskbuffer + i] = disk[base + i];
                     }
                 } else if(g_diskcmd == 2) {
-                    /* write mem -> disk */
+                    /* write memory -> disk */
                     for(int i=0; i<128; i++) {
                         disk[base + i] = dmem[g_diskbuffer + i];
                     }
                 }
             }
-            /* Mark command finished */
             g_diskcmd = 0;
-            IOReg[IRQ1STATUS] = 1;
+            IOReg[IRQ1STATUS] = 1; /* Disk operation complete => raise IRQ1 */
         }
     }
 }
 
-/* Check interrupts and jump if enabled + not in ISR */
+/* Check & handle interrupts. If pending & not inISR => jump to IOReg[IRQHANDLER] */
 static void check_interrupts() {
     uint32_t irq = 0;
-    if( (IOReg[IRQ0ENABLE] & IOReg[IRQ0STATUS]) ||
-        (IOReg[IRQ1ENABLE] & IOReg[IRQ1STATUS]) ||
-        (IOReg[IRQ2ENABLE] & IOReg[IRQ2STATUS]) )
-    {
+    if((IOReg[IRQ0ENABLE] & IOReg[IRQ0STATUS]) ||
+       (IOReg[IRQ1ENABLE] & IOReg[IRQ1STATUS]) ||
+       (IOReg[IRQ2ENABLE] & IOReg[IRQ2STATUS])) {
         irq=1;
     }
     if(irq && !inISR) {
-        IOReg[IRQRETURN] = PC;           /* Save return address */
-        PC = (IOReg[IRQHANDLER] & 0xFFF);/* Jump to ISR */
-        inISR=1;
+        IOReg[IRQRETURN] = PC;
+        PC = (IOReg[IRQHANDLER] & 0xFFF);
+        inISR = 1;
     }
 }
 
-/* Schedule a disk operation (just set busy & record time, do actual transfer later) */
+/* Start a disk operation (if free) */
 static void start_disk_op() {
     int cmd = IOReg[DISKCMD];
     if(cmd == 1 || cmd == 2) {
-        /* Only start if currently free */
         if(IOReg[DISKSTATUS] == 0) {
             disk_busy = 1;
             disk_start_cycle = cycle_count;
             IOReg[DISKSTATUS] = 1;
 
-            /* Record the command/sector/buffer for the delayed transfer */
             g_diskcmd    = cmd;
             g_disksector = IOReg[DISKSECTOR] & 0x7F;
             g_diskbuffer = IOReg[DISKBUFFER] & 0xFFF;
@@ -343,7 +214,7 @@ static void start_disk_op() {
     }
 }
 
-/* Write pixel to monitor if monitorcmd==1 */
+/* Write pixel to monitor (IOReg[MONITORCMD]==1) */
 static void write_monitor_pixel() {
     if(IOReg[MONITORCMD] == 1) {
         uint32_t addr = IOReg[MONITORADDR] & 0xFFFF;
@@ -351,45 +222,41 @@ static void write_monitor_pixel() {
         if(addr < MONITOR_SIZE) {
             monitor[addr] = val;
         }
-        IOReg[MONITORCMD] = 0; /* Clear the command */
+        IOReg[MONITORCMD] = 0; /* Done writing this pixel */
     }
 }
 
-/* Print one line in trace.txt */
+/* Print one line to trace.txt */
 static void print_trace_line(
-    uint64_t inst, 
+    uint64_t inst,
     uint32_t pc_before,
     const uint32_t *regs_before,
     uint8_t opcode, uint8_t rd, uint8_t rs, uint8_t rt, uint8_t rm,
     int32_t imm1, int32_t imm2)
 {
-    // PC (3 uppercase hex digits)
     fprintf(ftrace, "%03X ", (pc_before & 0xFFF));
-
-    // Instruction (12 uppercase hex digits)
     uint64_t mask48 = (inst & 0xFFFFFFFFFFFFULL);
     fprintf(ftrace, "%012llX ", (unsigned long long)mask48);
 
-    // R0 => 00000000
+    /* R0 => 00000000 */
     fprintf(ftrace, "00000000 ");
 
-    // R1 => imm1
+    /* R1 => imm1 */
     fprintf(ftrace, "%08x ", (uint32_t)imm1);
 
-    // R2 => imm2
+    /* R2 => imm2 */
     fprintf(ftrace, "%08x ", (uint32_t)imm2);
 
-    // R3..R15
-    for (int i = 3; i < 16; i++) {
+    /* R3..R15 */
+    for(int i=3; i<16; i++){
         fprintf(ftrace, "%08x ", regs_before[i]);
     }
-    // remove trailing space, add newline
     fseek(ftrace, -1, SEEK_CUR);
     fprintf(ftrace, "\n");
 }
 
-/* Execute one instruction at PC */
-static void execute_instruction() {
+/* Execute one instruction */
+void execute_instruction(void) {
     if(PC >= IMEM_SIZE) {
         halted = 1;
         return;
@@ -399,7 +266,7 @@ static void execute_instruction() {
     int32_t imm1, imm2;
     decode_instruction(inst, &opcode, &rd, &rs, &rt, &rm, &imm1, &imm2);
 
-    /* Load immediate registers: R1=$imm1, R2=$imm2 */
+    /* Load immediate regs: R1=$imm1, R2=$imm2 */
     R[1] = (uint32_t)imm1;
     R[2] = (uint32_t)imm2;
 
@@ -411,43 +278,43 @@ static void execute_instruction() {
 
     uint32_t RS = R[rs];
     uint32_t RT = R[rt];
-    uint32_t RM = R[rm];
+    uint32_t RMv= R[rm];
     uint32_t result = 0, addr = 0;
 
     switch(opcode) {
-        case 0: // add
-            result = RS + RT + RM;
+        case 0:  // add
+            result = RS + RT + RMv;
             if(rd!=0 && rd!=1 && rd!=2) R[rd] = result;
             break;
-        case 1: // sub
-            result = RS - RT - RM;
+        case 1:  // sub
+            result = RS - RT - RMv;
             if(rd!=0 && rd!=1 && rd!=2) R[rd] = result;
             break;
-        case 2: // mac
+        case 2:  // mac
         {
-            int64_t mul = ((int64_t)(int32_t)RS)*((int64_t)(int32_t)RT);
-            mul += (int64_t)(int32_t)RM;
+            int64_t mul = (int64_t)(int32_t)RS * (int64_t)(int32_t)RT;
+            mul += (int64_t)(int32_t)RMv;
             result = (uint32_t)mul;
             if(rd!=0 && rd!=1 && rd!=2) R[rd] = result;
         }
         break;
-        case 3: // and
-            result = RS & RT & RM;
+        case 3:  // and
+            result = RS & RT & RMv;
             if(rd!=0 && rd!=1 && rd!=2) R[rd] = result;
             break;
-        case 4: // or
-            result = RS | RT | RM;
+        case 4:  // or
+            result = RS | RT | RMv;
             if(rd!=0 && rd!=1 && rd!=2) R[rd] = result;
             break;
-        case 5: // xor
-            result = (RS ^ RT) ^ RM;
+        case 5:  // xor
+            result = (RS ^ RT) ^ RMv;
             if(rd!=0 && rd!=1 && rd!=2) R[rd] = result;
             break;
-        case 6: // sll
+        case 6:  // sll
             result = RS << (RT & 31);
             if(rd!=0 && rd!=1 && rd!=2) R[rd] = result;
             break;
-        case 7: // sra
+        case 7:  // sra
         {
             int32_t s  = (int32_t)RS;
             int32_t sh = s >> (RT & 31);
@@ -455,11 +322,11 @@ static void execute_instruction() {
             if(rd!=0 && rd!=1 && rd!=2) R[rd] = result;
         }
         break;
-        case 8: // srl
+        case 8:  // srl
             result = RS >> (RT & 31);
             if(rd!=0 && rd!=1 && rd!=2) R[rd] = result;
             break;
-        case 9: // beq
+        case 9:  // beq
             if(RS == RT) {
                 PC = (R[rm]&0xFFF);
             } else {
@@ -517,12 +384,12 @@ static void execute_instruction() {
         case 16: // lw
             addr = (R[rs] + R[rt]) & 0xFFF;
             if(rd!=0 && rd!=1 && rd!=2) {
-                R[rd] = dmem[addr] + RM;
+                R[rd] = dmem[addr] + RMv;
             }
             break;
         case 17: // sw
             addr = (R[rs] + R[rt]) & 0xFFF;
-            dmem[addr] = (RM + R[rd]);
+            dmem[addr] = (RMv + R[rd]);
             break;
         case 18: // reti
             PC = (IOReg[IRQRETURN] & 0xFFF);
@@ -548,6 +415,8 @@ static void execute_instruction() {
             if(ioaddr < IO_REGS_COUNT) {
                 IOReg[ioaddr] = val;
                 log_hwregtrace(1, ioaddr, val);
+
+                /* Check for special I/O effect */
                 if(ioaddr == LEDS)        check_leds();
                 if(ioaddr == DISPLAY7SEG) check_7seg();
                 if(ioaddr == MONITORCMD)  write_monitor_pixel();
@@ -556,16 +425,16 @@ static void execute_instruction() {
         }
         break;
         case 21: // halt
-            halted=1;
+            halted = 1;
             break;
         default:
-            // unknown => do nothing (nop)
+            // unknown opcode => treat as nop
             break;
     }
 
-    /* For non-branch ops, if not halted, increment PC */
+    /* For non-branch ops, increment PC if not halted */
     if(!halted &&
-       (opcode<9 || opcode==16|| opcode==17||
+       (opcode<9 || opcode==16 || opcode==17 ||
         opcode==19|| opcode==20|| opcode>21))
     {
         PC++;
@@ -573,74 +442,147 @@ static void execute_instruction() {
     print_trace_line(inst, oldPC, regs_before, opcode, rd, rs, rt, rm, imm1, imm2);
 }
 
-/* After halt: write outputs */
-static void write_outputs(
-    const char* dmemout,
-    const char* regout,
-    const char* cyclesf,
-    const char* diskout,
-    const char* monitorf,
-    const char* monitoryuvf)
+/* --------------------------------------------------- */
+/*                File Readers                         */
+/* --------------------------------------------------- */
+
+void read_imem(const char* filename) {
+    FILE* f = fopen(filename, "r");
+    if(!f) {
+        memset(imem, 0, sizeof(imem));
+        return;
+    }
+    char line[64];
+    int addr=0;
+    while(fgets(line, sizeof(line), f)) {
+        if(addr >= IMEM_SIZE) break;
+        uint64_t val=0;
+        sscanf(line, "%llx", &val);
+        imem[addr++] = (val & 0xFFFFFFFFFFFFULL);
+    }
+    fclose(f);
+}
+
+void read_dmem(const char* filename) {
+    FILE* f = fopen(filename, "r");
+    if(!f) {
+        memset(dmem, 0, sizeof(dmem));
+        return;
+    }
+    char line[64];
+    int addr=0;
+    while(fgets(line, sizeof(line), f)) {
+        if(addr >= DMEM_SIZE) break;
+        dmem[addr++] = hex_to_u32(line);
+    }
+    fclose(f);
+}
+
+void read_disk(const char* filename) {
+    FILE* f = fopen(filename, "r");
+    if(!f) {
+        memset(disk,0,sizeof(disk));
+        return;
+    }
+    char line[64];
+    int addr=0;
+    while(fgets(line,sizeof(line),f)) {
+        if(addr>=DISK_SIZE) break;
+        disk[addr++] = hex_to_u32(line);
+    }
+    fclose(f);
+}
+
+void read_irq2(const char* filename) {
+    FILE* f = fopen(filename, "r");
+    if(!f) {
+        irq2_cycles=NULL;
+        irq2_count=0;
+        return;
+    }
+    int capacity=128;
+    irq2_cycles = (int*)malloc(capacity * sizeof(int));
+    irq2_count=0;
+    int x;
+    while(fscanf(f,"%d",&x)==1) {
+        if(irq2_count >= capacity){
+            capacity *= 2;
+            irq2_cycles = (int*)realloc(irq2_cycles, capacity*sizeof(int));
+        }
+        irq2_cycles[irq2_count++] = x;
+    }
+    fclose(f);
+}
+
+/* ----------------------------------------- */
+/*        Write outputs after halt          */
+/* ----------------------------------------- */
+void write_outputs(const char* dmemout,
+                   const char* regout,
+                   const char* cyclesf,
+                   const char* diskout,
+                   const char* monitorf,
+                   const char* monitoryuvf)
 {
-    /* --- dmemout.txt: skip trailing zero lines --- */
+    /* 1) dmemout: skip trailing zero lines */
     int last_nonzero_dmem = -1;
     for(int i=0; i<DMEM_SIZE; i++){
-        if(dmem[i] != 0) {
-            last_nonzero_dmem = i;
-        }
+        if(dmem[i] != 0) last_nonzero_dmem = i;
     }
-    /* Print dmem only up to last nonzero */
     for(int i=0; i<=last_nonzero_dmem; i++){
         fprintf(fdmemout, "%08x\n", dmem[i]);
     }
-    /* If everything was zero, file remains empty as required */
 
-    /* regout.txt => R3..R15 */
+    /* 2) regout: R3..R15 */
     for(int i=3; i<16; i++){
         fprintf(fregout, "%08x\n", R[i]);
     }
 
-    /* cycles.txt => final cycle count */
+    /* 3) cycles.txt => final cycle_count */
     fprintf(fcycles, "%llu\n", (unsigned long long)cycle_count);
 
-    /* diskout.txt => skip trailing zeros as well */
-    int last_nonzero=-1;
+    /* 4) diskout: skip trailing zero lines */
+    int last_nonzero_disk = -1;
     for(int i=0; i<DISK_SIZE; i++){
-        if(disk[i]!=0) last_nonzero=i;
+        if(disk[i] != 0) last_nonzero_disk = i;
     }
-    for(int i=0; i<=last_nonzero; i++){
+    for(int i=0; i<=last_nonzero_disk; i++){
         fprintf(fdiskout, "%08x\n", disk[i]);
     }
-    /* If all zero, empty file */
 
-    /* monitor.txt => 65536 lines, each pixel in 2 hex digits */
+    /* 5) monitor.txt => 65536 lines, each pixel in 2 hex digits */
     for(int i=0; i<MONITOR_SIZE; i++){
         fprintf(fmonitor, "%02x\n", monitor[i]);
     }
 
-    /* monitor.yuv => binary dump of the same 65536 bytes */
-    fwrite(monitor,1,MONITOR_SIZE,fmonitoryuv);
+    /* 6) monitor.yuv => binary dump of the same 65536 bytes */
+    fwrite(monitor, 1, MONITOR_SIZE, fmonitoryuv);
 }
 
-int main(int argc,char* argv[]){
+/* ----------------------------------------- */
+/*                 MAIN                      */
+/* ----------------------------------------- */
+int main(int argc, char* argv[]){
     if(argc != 15){
-        fprintf(stderr,"Usage: sim.exe imemin.txt dmemin.txt diskin.txt irq2in.txt "
-                       "dmemout.txt regout.txt trace.txt hwregtrace.txt cycles.txt "
-                       "leds.txt display7seg.txt diskout.txt monitor.txt monitor.yuv\n");
+        fprintf(stderr,
+            "Usage: %s imemin.txt dmemin.txt diskin.txt irq2in.txt "
+            "dmemout.txt regout.txt trace.txt hwregtrace.txt cycles.txt "
+            "leds.txt display7seg.txt diskout.txt monitor.txt monitor.yuv\n",
+            argv[0]);
         return 1;
     }
 
     /* Open output files */
-    fdmemout    = safe_fopen(argv[5],"w");
-    fregout     = safe_fopen(argv[6],"w");
-    ftrace      = safe_fopen(argv[7],"w");
-    fhwregtrace = safe_fopen(argv[8],"w");
-    fcycles     = safe_fopen(argv[9],"w");
-    fleds       = safe_fopen(argv[10],"w");
-    f7seg       = safe_fopen(argv[11],"w");
-    fdiskout    = safe_fopen(argv[12],"w");
-    fmonitor    = safe_fopen(argv[13],"w");
-    fmonitoryuv = safe_fopen(argv[14],"wb");
+    fdmemout    = safe_fopen(argv[5],  "w");
+    fregout     = safe_fopen(argv[6],  "w");
+    ftrace      = safe_fopen(argv[7],  "w");
+    fhwregtrace = safe_fopen(argv[8],  "w");
+    fcycles     = safe_fopen(argv[9],  "w");
+    fleds       = safe_fopen(argv[10], "w");
+    f7seg       = safe_fopen(argv[11], "w");
+    fdiskout    = safe_fopen(argv[12], "w");
+    fmonitor    = safe_fopen(argv[13], "w");
+    fmonitoryuv = safe_fopen(argv[14], "wb");
 
     /* Read inputs */
     read_imem(argv[1]);
@@ -656,32 +598,30 @@ int main(int argc,char* argv[]){
     inISR       = 0;
     halted      = 0;
     disk_busy   = 0;
-    cycle_count = 0;   /* Start from 0 */
+    cycle_count = 0;
     PC          = 0;
-
     last_leds   = 0;
     last_7seg   = 0;
     g_diskcmd   = 0;
 
-    /* Main loop */
-    while(!halted)
-    {
-        /* 1) 'clks' tracks current cycle */
+    /* Main simulation loop */
+    while(!halted) {
+        /* 1) CLKS register tracks current cycle */
         IOReg[CLKS] = (uint32_t)(cycle_count & 0xFFFFFFFF);
 
         /* 2) Execute one instruction */
         execute_instruction();
 
-        /* 3) Check if this cycle triggers an external IRQ2 */
+        /* 3) Possibly raise irq2 */
         check_irq2();
 
-        /* 4) Update timer => may raise irq0status */
+        /* 4) Timer update => might raise irq0 */
         update_timer();
 
-        /* 5) Update disk => if 1024 cycles passed, do the DMA now */
+        /* 5) Disk update => handle 1024-cycle latency */
         update_disk();
 
-        /* 6) Check and handle interrupts => jump to ISR if pending & not inISR */
+        /* 6) Check interrupts => jump to ISR if needed */
         check_interrupts();
 
         /* End of cycle */
@@ -689,7 +629,8 @@ int main(int argc,char* argv[]){
     }
 
     /* Write final outputs */
-    write_outputs(argv[5], argv[6], argv[9], argv[12], argv[13], argv[14]);
+    write_outputs(argv[5], argv[6], argv[9],
+                  argv[12], argv[13], argv[14]);
 
     /* Close all files */
     fclose(fdmemout);
@@ -703,7 +644,11 @@ int main(int argc,char* argv[]){
     fclose(fmonitor);
     fclose(fmonitoryuv);
 
-    if(irq2_cycles) free(irq2_cycles);
+    /* Cleanup irq2 data if allocated */
+    if(irq2_cycles) {
+        free(irq2_cycles);
+        irq2_cycles = NULL;
+    }
 
     return 0;
 }
