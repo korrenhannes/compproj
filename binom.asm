@@ -1,86 +1,38 @@
-###############################################
-# BINOMIAL COEFFICIENT (ALTERNATE VERSION)
-# Calculates binom(n, k) recursively and stores
-# the result in memory address 0x102 (decimal 258).
-###############################################
-
-        # 1) Set $ra to jump to the end of the program when done.
-        add     $ra,   $zero, $zero, $imm1, PROG_DONE, 0     
-        # 2) Initialize stack pointer to 4090 (0x6FF).
-        add     $sp,   $zero, $imm1, $zero, 0x6FF,     0     # $sp = 4090
-        # 3) Load n from Memory[256] => $a0
-        lw      $a0,   $imm1, $zero, $zero, 256,       0     
-        # 4) Load k from Memory[257] => $a1
-        lw      $a1,   $imm1, $zero, $zero, 257,       0     
-        # 5) Initialize $s0 to 0
-        add     $s0,   $zero, $zero, $zero, 0,         0     
-
-###############################################
-# FUNC_BINOM: Computes binom($a0, $a1)
-###############################################
-FUNC_BINOM:
-        # Create stack frame: push 4 words ($ra, $a0, $a1, $s0)
-        add     $sp,   $sp,   $imm1,  $zero, -4,  0    
-        sw      $ra,   $sp,   $zero,  $zero,   0,   0 
-        sw      $a0,   $sp,   $imm1,  $zero,   1,   0 
-        sw      $a1,   $sp,   $imm1,  $zero,   2,   0 
-        sw      $s0,   $sp,   $imm1,  $zero,   3,   0 
-
-        # If k != 0 => jump to label CHECK_K_ISNT_ZERO
-        bne     $zero, $a1,   $zero,  $imm1, CHECK_K_ISNT_ZERO, 0
-        # Else (k == 0) => skip to label K_IS_ZERO_PATH
-        beq     $zero, $zero, $zero,  $imm1, K_IS_ZERO_PATH,    0
-
-CHECK_K_ISNT_ZERO:
-        # If n != k => jump to label N_K_NOT_EQUAL
-        bne     $zero, $a0,   $a1,    $imm1, N_K_NOT_EQUAL,     0
-
-K_IS_ZERO_PATH:
-        # If we got here => (k == 0) or (n == k)
-        add     $s0,   $zero, $imm1,  $zero, 1, 0     # s0 = 1
-        beq     $zero, $zero, $zero,  $imm1, BINOM_RET, 0
-
-N_K_NOT_EQUAL:
-        # Decrement n: (n = n - 1)
-        add     $a0,   $a0,   $imm1,  $zero, -1, 0
-        # Recursively call FUNC_BINOM => binom(n-1,k)
-        jal     $ra,   $zero, $zero,  $imm1, FUNC_BINOM, 0
-
-AFTER_FIRST_CALL:
-        # Decrement k: (k = k - 1)
-        add     $a1,   $a1,   $imm1,  $zero, -1, 0
-        # Recursively call FUNC_BINOM => binom(n-1,k-1)
-        jal     $ra,   $zero, $zero,  $imm1, FUNC_BINOM, 0
-
-###############################################
-# BINOM_RET: Final part of recursion
-###############################################
-BINOM_RET:
-        # Accumulate partial sums in $v0: v0 += s0
-        add     $v0,   $v0,   $s0,    $zero, 0, 0
-        # Reset s0
-        add     $s0,   $zero, $zero,  $zero, 0, 0
-
-        # Restore registers from stack frame
-        lw      $ra,   $sp,   $zero,  $zero, 0,   0 
-        lw      $a0,   $sp,   $imm1,  $zero, 1,   0 
-        lw      $a1,   $sp,   $imm1,  $zero, 2,   0 
-        lw      $s0,   $sp,   $imm1,  $zero, 3,   0 
-        add     $sp,   $sp,   $imm1,  $zero, 4,   0 
-
-        # Return to caller
-        jal     $t2,   $zero, $zero,  $ra,   0,   0
-
-###############################################
-# PROG_DONE: Wrap up the program
-###############################################
-PROG_DONE:
-        # Store the final result in Memory[258]
-        sw      $v0,   $zero, $imm1,  $zero, 258, 0
-        halt    $zero, $zero, $zero,  $zero, 0,   0
-
-###############################################
-# Data initialization
-###############################################
-.word 0x100 4   # n = 4  (Memory[0x100])
-.word 0x101 2   # k = 2  (Memory[0x101])
+		add $sp, $zero, $imm1, $zero, 0x6FF, 0			#$sp=4090(points on the last cell in memory)
+		lw  $a0, $imm1, $zero, $zero, 256, 0			#$a0=Memory[256] (value of n)
+		lw  $a1, $imm1, $zero, $zero, 257, 0			#$a1=Memory[257] (value of k)
+		add $s0, $zero, $zero, $zero, 0, 0			#$s0=0
+		add $ra, $zero, $zero, $imm1, END, 0			#$ra=value of the pc of "END"
+binom:
+		add $sp, $sp, $imm1, $zero, -4, 0				#$sp=$sp-4
+		sw  $ra, $sp, $zero, $zero, 0, 0				#store $ra in Memory[$sp]
+		sw  $a0, $sp, $imm1, $zero, 1, 0				#store $a0 in Memory[$sp+1]
+		sw  $a1, $sp, $imm1, $zero, 2, 0				#store $a1 in Memory[$sp+2]
+		sw  $s0, $sp, $imm1, $zero, 3, 0				#store $s0 in Memory[$sp+3]
+		bne $zero,  $a1, $zero, $imm1, Continue_1, 0		#jump to "Continue_1" if (k!=0)
+		beq $zero, $zero, $zero, $imm1, Continue_2, 0		#jump to "Continue_2"
+Continue_1:
+		bne $zero, $a0, $a1, $imm1, Continue, 0			#jump to "Continue" if (n!=k)
+Continue_2:	
+		add $s0, $zero, $imm1, $zero, 1, 0				#$s0=1
+		beq $zero, $zero, $zero, $imm1, return, 0			#jump to "return"
+Continue:	
+		add $a0, $a0, $imm1, $zero, -1, 0				#$a0=$a0-1 (n=n-1)
+		jal $ra, $zero,  $zero, $imm1, binom, 0			#jump to "binom" and return to "bin_1" [binom(n-1,k)] 
+bin_1:	
+		add $a1, $a1, $imm1, $zero, -1, 0				#$a1=$a1-1 (k=k-1)
+		jal $ra, $zero, $zero, $imm1, binom, 0			#jump to "binom" and return to "bin_2" [binom(n-1,k-1)]
+return:	
+		add $v0, $v0, $s0, $zero, 0, 0				#$v0=$v0+$s0
+		add $s0, $zero, $zero ,$zero, 0, 0			#$s0=0
+		lw  $ra, $sp, $zero, $zero, 0, 0				#$ra=value of Memory[$sp]
+		lw  $a0, $sp,  $imm1, $zero, 1, 0				#$a0=value of Memory[$sp+1]
+		lw  $a1, $sp, $imm1, $zero, 2, 0				#$a1=value of Memory[$sp+2]
+		lw  $s0, $sp, $imm1, $zero, 3, 0				#$s0=value of Memory[$sp+3]
+		add $sp, $sp, $imm1, $zero, 4, 0				#$sp=$sp+4
+		jal $t2, $zero, $zero, $ra, 0, 0				#jump to pc=$ra, and return to "END"
+END:	
+		sw  $v0, $zero, $imm1, $zero, 258, 0			#Memory[258]=value of $v0 (this is the result that will be written in 0X102)
+		halt  $zero, $zero, $zero, $zero, 0, 0					#Exit Simulator
+.word 0x100 4  # n=4
+.word 0x101 2  # k=2
