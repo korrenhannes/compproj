@@ -1,80 +1,113 @@
-#############################################################
-# Suppose we want to test with RADIUS = 10 (stored at MEM[0x100])
-#############################################################
+###########################################################
+# Initialize i = 0
+###########################################################
+    add   $s0, $zero, $zero, $zero, 0, 0    # i = 0
 
-# 1) Load radius into $s0
-      lw     $s0,     $imm1,   $zero,  $zero, 0x100, 0   # $s0 = Memory[0x100]
+ROW_LOOP:
+    # if (i == 4) then exit the row loop
+    beq   $zero, $imm2, $s0, $imm1, END_ROW_LOOP, 4
 
-# 2) Compute radius^2 in $s1
-      mac    $s1,     $s0,     $s0,    $zero, 0, 0       # $s1 = (radius * radius)
+    ###########################################################
+    # Initialize j = 0
+    ###########################################################
+    add   $s1, $zero, $zero, $zero, 0, 0    # j = 0
 
-# 3) Initialize x = 128 - radius into $t1
-      sub    $t1,     $imm1,   $s0,    $zero, 128, 0
+COLUMN_LOOP:
+    # if (j == 4) then exit the column loop
+    beq   $zero, $imm2, $s1, $imm1, END_COLUMN_LOOP, 4
 
-LOOP_XSCAN:
-      # Check if x == 128 + radius => end
-      add    $t0,     $imm1,   $s0,    $zero, 128, 0
-      beq    $zero,   $t0,     $t1,    $imm1, FINISH, 0  # if (x == 128 + radius) => jump to FINISH
+    ###########################################################
+    # Initialize k = 0, sum = 0
+    ###########################################################
+    add   $t0, $zero, $zero, $zero, 0, 0    # k = 0
+    add   $s2, $zero, $zero, $zero, 0, 0    # sum = 0
 
-      # Initialize y = 128 - radius => $t2
-      sub    $t2,     $imm1,   $s0,    $zero, 128, 0
+MULT_LOOP:
+    # if (k == 4) then exit multiplication loop
+    beq   $zero, $imm2, $t0, $imm1, END_MULT_LOOP, 4
+    
+    # Calculate address of A[i][k]
+    sll   $a1, $s0,   $imm1, $zero, 2, 0      # offset = i * 4
+    add   $a1, $a1,   $t0,   $zero, 0,   0      # offset += k
+    add   $a1, $a1,   $imm1, $zero, 256, 0     # base address of A
+    lw    $t1, $a1,   $zero, $zero, 0,   0      # $t1 = A[i][k]
 
-LOOP_YSCAN:
-      # if y == 128 + radius => go increment X
-      beq    $zero,   $t0,     $t2,    $imm1, INCR_X, 0
+    # Calculate address of B[k][j]
+    sll   $a1, $t0,   $imm1, $zero, 2, 0      # offset = k * 4
+    add   $a1, $a1,   $s1,   $zero, 0,   0      # offset += j
+    add   $a1, $a1,   $imm1, $zero, 272, 0     # base address of B
+    lw    $t2, $a1,   $zero, $zero, 0,   0      # $t2 = B[k][j]
 
-      ########################################################
-      # Compute distance^2 = (128 - x)^2 + (128 - y)^2
-      ########################################################
+    # sum += A[i][k] * B[k][j]
+    mac   $s2, $t1, $t2, $s2, 0, 0
 
-      # dx = 128 - x => $s2
-      sub    $s2,     $imm1,   $t1,    $zero, 128, 0
+    # k++
+    add   $t0, $t0, $imm1, $zero, 1, 0
 
-      # dy = 128 - y => $a1
-      sub    $a1,     $imm1,   $t2,    $zero, 128, 0
+    # Repeat until k == 4
+    beq   $zero, $zero, $zero, $imm1, MULT_LOOP, 0
 
-      # dist^2 = dx^2 + dy^2 => store in $v0
-      mac    $v0,     $s2,     $s2,    $zero, 0, 0
-      mac    $v0,     $a1,     $a1,    $v0,   0, 0
+END_MULT_LOOP:
+    # Now store sum into C[i][j]
+    sll   $a1, $s0,   $imm1, $zero, 2, 0      # offset = i * 4
+    add   $a1, $a1,   $s1,   $zero, 0,   0      # offset += j
+    add   $a1, $a1,   $imm1, $zero, 288, 0     # base address of C
+    sw    $s2, $a1,   $zero, $zero, 0,   0      # C[i][j] = sum
 
-      # 7) Compare dist^2 ($v0) to radius^2 ($s1)
-      ble    $zero,   $v0,     $s1,    $imm1, PIXEL_INSIDE, 0
+    # j++
+    add   $s1, $s1, $imm1, $zero, 1, 0
+    
+    # Repeat until j == 4
+    beq   $zero, $zero, $zero, $imm1, COLUMN_LOOP, 0
 
-      # If not inside, jump to next Y
-      beq    $zero,   $zero,   $zero,  $imm1, INCR_Y, 0
+END_COLUMN_LOOP:
+    # i++
+    add   $s0, $s0, $imm1, $zero, 1, 0
 
-PIXEL_INSIDE:
-      # Pixel is inside => color = 0xFF (white)
-      add    $a2,     $zero,   $imm1,  $zero, 0xFF, 0
+    # Repeat until i == 4
+    beq   $zero, $zero, $zero, $imm1, ROW_LOOP, 0
 
-DRAW_PIXEL:
-      # a0 = (x << 8) + y for pixel coordinate
-      sll    $a0,     $t1,     $imm1,  $zero, 8, 0
-      add    $a0,     $a0,     $t2,    $zero, 0, 0
+END_ROW_LOOP:
+    halt  $zero, $zero, $zero, $zero, 0, 0
 
-      # Send pixel address to IO register #20
-      out    $zero,   $imm1,   $zero,  $a0,   20, 0
+###########################################################
+# Data Section
+#
+# The first 16 words (addresses 256..271) are matrix A.
+# The next 16 words (addresses 272..287) are matrix B.
+# The code stores matrix C at addresses 288..303.
+###########################################################
 
-      # Send pixel color to IO register #21
-      out    $zero,   $imm1,   $zero,  $a2,   21, 0
+    .word 256 1
+    .word 257 2
+    .word 258 3
+    .word 259 4
+    .word 260 5
+    .word 261 6
+    .word 262 7
+    .word 263 8
+    .word 264 9
+    .word 265 10
+    .word 266 11
+    .word 267 12
+    .word 268 13
+    .word 269 14
+    .word 270 15
+    .word 271 16
 
-      # Write command (1) to IO register #22 to draw
-      out    $zero,   $zero,   $imm2,  $imm1, 1, 22
-
-INCR_Y:
-      # y++
-      add    $t2,     $t2,     $imm1,  $zero, 1, 0
-      beq    $zero,   $zero,   $zero,  $imm1, LOOP_YSCAN, 0  # Unconditional
-
-INCR_X:
-      # x++
-      add    $t1,     $t1,     $imm1,  $zero, 1, 0
-      beq    $zero,   $zero,   $zero,  $imm1, LOOP_XSCAN, 0  # Unconditional
-
-FINISH:
-      halt   $zero,   $zero,   $zero,  $zero, 0, 0
-
-#############################################################
-# Data section: radius stored here (10 by default)
-#############################################################
-      .word 0x100 10
+    .word 272 1
+    .word 273 2
+    .word 274 3
+    .word 275 4
+    .word 276 5
+    .word 277 6
+    .word 278 7
+    .word 279 8
+    .word 280 9
+    .word 281 10
+    .word 282 11
+    .word 283 12
+    .word 284 13
+    .word 285 14
+    .word 286 15
+    .word 287 16
